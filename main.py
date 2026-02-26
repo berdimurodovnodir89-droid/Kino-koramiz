@@ -5,7 +5,6 @@ import sqlite3
 from datetime import datetime
 
 from aiohttp import web
-
 from dotenv import load_dotenv
 
 from telegram import (
@@ -31,14 +30,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").strip().rstrip("/")  # https://xxx.onrender.com
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
-DEFAULT_REGION = os.getenv("DEFAULT_REGION", "UZ").strip().upper()  # UZ recommended
+DEFAULT_REGION = os.getenv("DEFAULT_REGION", "UZ").strip().upper()
 PORT = int(os.getenv("PORT", "10000"))
 
 WEBHOOK_PATH = "/webhook"  # full: https://xxx.onrender.com/webhook
-
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
-
 DB_PATH = os.getenv("DB_PATH", "data.db").strip()
 
 # ------------------ LOGGING ------------------
@@ -112,7 +109,6 @@ def main_menu_kb():
 
 
 def results_inline_kb(results: list[dict]):
-    # callback: m:<movie_id>
     buttons = []
     for r in results[:5]:
         title = r.get("title") or "Unknown"
@@ -149,7 +145,11 @@ async def tmdb_get_json(session, path: str, params: dict):
 
 
 async def search_movie(session, query: str):
-    data = await tmdb_get_json(session, "/search/movie", {"query": query, "include_adult": "false", "language": "en-US"})
+    data = await tmdb_get_json(
+        session,
+        "/search/movie",
+        {"query": query, "include_adult": "false", "language": "en-US"},
+    )
     return data.get("results", []) or []
 
 
@@ -158,7 +158,6 @@ async def get_movie_details(session, movie_id: int):
 
 
 async def get_movie_providers(session, movie_id: int):
-    # returns by country codes: { "results": { "UZ": {...}, "US": {...} } }
     return await tmdb_get_json(session, f"/movie/{movie_id}/watch/providers", {})
 
 
@@ -166,7 +165,6 @@ def format_providers(providers_json: dict, region: str) -> str:
     results = (providers_json or {}).get("results", {}) or {}
     info = results.get(region)
 
-    # fallback: try US if region not found
     used_region = region
     if not info:
         info = results.get("US")
@@ -184,7 +182,7 @@ def format_providers(providers_json: dict, region: str) -> str:
                 out.append(name)
         return out
 
-    flatrate = names("flatrate")  # subscription
+    flatrate = names("flatrate")
     rent = names("rent")
     buy = names("buy")
 
@@ -225,13 +223,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # use message or callback message
     msg = update.effective_message
     await msg.reply_text("🔥 Trending kinolarni yuklayapman...")
 
-    async with context.application.bot_data["http_session"] as session:
-        data = await tmdb_get_json(session, "/trending/movie/day", {"language": "en-US"})
-        results = data.get("results", [])[:10]
+    session = context.application.bot_data["http_session"]
+    data = await tmdb_get_json(session, "/trending/movie/day", {"language": "en-US"})
+    results = (data.get("results", []) or [])[:10]
 
     if not results:
         await msg.reply_text("Hozircha trending topilmadi.", reply_markup=main_menu_kb())
@@ -287,30 +284,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_cmd(update, context)
         return
 
-    # Otherwise treat as movie query
     if not TMDB_API_KEY:
-        await update.message.reply_text(
-            "TMDB_API_KEY sozlanmagan. Render -> Environment ga TMDB_API_KEY qo‘ying.",
-            reply_markup=main_menu_kb(),
-        )
+        await update.message.reply_text("TMDB_API_KEY sozlanmagan. Render -> Environment ga TMDB_API_KEY qo‘ying.", reply_markup=main_menu_kb())
         return
 
     await update.message.reply_text("🔎 Qidiryapman...")
 
-    async with context.application.bot_data["http_session"] as session:
-        results = await search_movie(session, text)
+    session = context.application.bot_data["http_session"]
+    results = await search_movie(session, text)
 
     if not results:
         await update.message.reply_text("Hech narsa topilmadi. Boshqa nom bilan urinib ko‘ring.", reply_markup=main_menu_kb())
         return
 
-    # store last results (optional)
-    context.user_data["last_query"] = text
-
-    await update.message.reply_text(
-        "Topilgan natijalar (birini tanlang):",
-        reply_markup=results_inline_kb(results),
-    )
+    await update.message.reply_text("Topilgan natijalar (birini tanlang):", reply_markup=results_inline_kb(results))
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,26 +314,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("w:add:"):
-        try:
-            movie_id = int(data.split(":")[2])
-        except Exception:
-            return
+        movie_id = int(data.split(":")[2])
         last_movie = context.user_data.get("last_movie")
         if last_movie and last_movie.get("id") == movie_id:
             title = last_movie.get("title") or "Unknown"
             year = (last_movie.get("release_date") or "")[:4]
         else:
-            title = "Movie"
-            year = ""
+            title, year = "Movie", ""
         db_add_watch(update.effective_user.id, movie_id, title, year)
         await q.message.reply_text("⭐ Watchlistga qo‘shildi!", reply_markup=main_menu_kb())
         return
 
     if data.startswith("w:del:"):
-        try:
-            movie_id = int(data.split(":")[2])
-        except Exception:
-            return
+        movie_id = int(data.split(":")[2])
         db_remove_watch(update.effective_user.id, movie_id)
         await q.message.reply_text("🗑 Watchlistdan o‘chirildi.", reply_markup=main_menu_kb())
         return
@@ -358,11 +338,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         movie_id = int(data.split(":")[1])
 
-        async with context.application.bot_data["http_session"] as session:
-            details = await get_movie_details(session, movie_id)
-            providers = await get_movie_providers(session, movie_id)
+        session = context.application.bot_data["http_session"]
+        details = await get_movie_details(session, movie_id)
+        providers = await get_movie_providers(session, movie_id)
 
-        # remember last movie for watchlist add
         context.user_data["last_movie"] = details
 
         title = details.get("title") or "Unknown"
@@ -393,28 +372,23 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=movie_actions_kb(movie_id),
             )
         else:
-            await q.message.reply_text(
-                text,
-                parse_mode="Markdown",
-                reply_markup=movie_actions_kb(movie_id),
-            )
-        return
+            await q.message.reply_text(text, parse_mode="Markdown", reply_markup=movie_actions_kb(movie_id))
 
 
-# ------------------ AIOHTTP WEB SERVER ------------------
+# ------------------ AIOHTTP WEB SERVER (WEBHOOK) ------------------
 async def handle_ok(request):
     return web.Response(text="OK")
 
 
 async def handle_webhook(request: web.Request):
-    app: Application = request.app["tg_app"]
+    tg_app: Application = request.app["tg_app"]
     try:
         data = await request.json()
     except Exception:
         return web.Response(status=400, text="Bad JSON")
 
-    update = Update.de_json(data, app.bot)
-    await app.update_queue.put(update)
+    update = Update.de_json(data, tg_app.bot)
+    await tg_app.update_queue.put(update)
     return web.Response(text="ok")
 
 
@@ -454,36 +428,34 @@ def build_aiohttp_app(tg_app: Application) -> web.Application:
     return aio_app
 
 
-# ------------------ ENTRY ------------------
-def check_env():
+def build_tg_app() -> Application:
+    tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    tg_app.add_handler(CommandHandler("start", start))
+    tg_app.add_handler(CommandHandler("help", help_cmd))
+    tg_app.add_handler(CallbackQueryHandler(on_callback))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    return tg_app
+
+
+def check_env(require_webhook: bool):
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN yo'q. Render -> Environment ga BOT_TOKEN qo‘ying.")
-    if not WEBHOOK_BASE:
+    if not TMDB_API_KEY:
+        raise RuntimeError("TMDB_API_KEY yo'q. Render -> Environment ga TMDB_API_KEY qo‘ying.")
+    if require_webhook and not WEBHOOK_BASE:
         raise RuntimeError("WEBHOOK_BASE yo'q. Masalan: https://your-app.onrender.com")
 
 
-async def main_async():
-    check_env()
+async def run_webhook():
+    check_env(require_webhook=True)
     db_init()
 
-    # Telegram app
-    tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    tg_app = build_tg_app()
 
-    # Keep ONE shared aiohttp ClientSession for TMDB
-    # We store it in bot_data as an async context manager-like holder.
-    # Easiest: create session once and store it; close on exit.
     import aiohttp
     session = aiohttp.ClientSession()
     tg_app.bot_data["http_session"] = session
 
-    # Handlers
-    tg_app.add_handler(CommandHandler("start", start))
-    tg_app.add_handler(CommandHandler("help", help_cmd))
-
-    tg_app.add_handler(CallbackQueryHandler(on_callback))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # aiohttp server
     aio_app = build_aiohttp_app(tg_app)
 
     runner = web.AppRunner(aio_app)
@@ -492,7 +464,6 @@ async def main_async():
     logger.info("Listening on 0.0.0.0:%s", PORT)
     await site.start()
 
-    # run forever
     try:
         while True:
             await asyncio.sleep(3600)
@@ -504,30 +475,29 @@ async def main_async():
         await runner.cleanup()
 
 
+def run_polling():
+    check_env(require_webhook=False)
+    db_init()
+
+    tg_app = build_tg_app()
+
+    import aiohttp
+    session = aiohttp.ClientSession()
+    tg_app.bot_data["http_session"] = session
+
+    logger.info("LOCAL MODE: run_polling()")
+    tg_app.run_polling(drop_pending_updates=True)
+
+
 def main():
-    asyncio.run(main_async())
+    # Local: WEBHOOK_BASE bo'lmasa polling
+    if not WEBHOOK_BASE:
+        run_polling()
+        return
+
+    # Render: WEBHOOK_BASE bo'lsa webhook
+    asyncio.run(run_webhook())
 
 
 if __name__ == "__main__":
     main()
-
-def main():
-    check_env()
-    db_init()
-
-    # Telegram app
-    tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    tg_app.add_handler(CommandHandler("start", start))
-    tg_app.add_handler(CommandHandler("help", help_cmd))
-    tg_app.add_handler(CallbackQueryHandler(on_callback))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # ✅ LOCAL TEST: polling
-    if not os.getenv("WEBHOOK_BASE", "").strip():
-        print("✅ LOCAL MODE: run_polling()")
-        tg_app.run_polling(drop_pending_updates=True)
-        return
-
-    # ✅ RENDER MODE: webhook (public URL bor)
-    asyncio.run(main_async())
