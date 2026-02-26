@@ -3,6 +3,7 @@ import logging
 import asyncio
 import sqlite3
 from datetime import datetime
+from urllib.parse import quote_plus
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -32,11 +33,11 @@ WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").strip().rstrip("/")  # https://xxx.
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 DEFAULT_REGION = os.getenv("DEFAULT_REGION", "UZ").strip().upper()
 PORT = int(os.getenv("PORT", "10000"))
+DB_PATH = os.getenv("DB_PATH", "data.db").strip()
 
 WEBHOOK_PATH = "/webhook"  # full: https://xxx.onrender.com/webhook
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
-DB_PATH = os.getenv("DB_PATH", "data.db").strip()
 
 # ------------------ LOGGING ------------------
 logging.basicConfig(
@@ -119,16 +120,35 @@ def results_inline_kb(results: list[dict]):
     return InlineKeyboardMarkup(buttons)
 
 
-def movie_actions_kb(movie_id: int):
-    return InlineKeyboardMarkup(
+def youtube_search_url(title: str, year: str | None):
+    q = f"{title} {year}".strip() if year else title
+    return f"https://www.youtube.com/results?search_query={quote_plus(q + ' rent')}"
+
+
+def movie_actions_kb(movie_id: int, watch_url: str | None = None, yt_url: str | None = None):
+    rows = []
+
+    # 1-qator: ko‘rish linklari
+    links_row = []
+    if watch_url:
+        links_row.append(InlineKeyboardButton("🎬 Ko‘rish (JustWatch)", url=watch_url))
+    if yt_url:
+        links_row.append(InlineKeyboardButton("▶️ YouTube qidirish", url=yt_url))
+    if links_row:
+        rows.append(links_row)
+
+    # 2-qator: watchlist tugmalari
+    rows.append(
         [
-            [
-                InlineKeyboardButton("⭐ Watchlistga qo‘shish", callback_data=f"w:add:{movie_id}"),
-                InlineKeyboardButton("🗑 O‘chirish", callback_data=f"w:del:{movie_id}"),
-            ],
-            [InlineKeyboardButton("⬅️ Menyu", callback_data="menu")],
+            InlineKeyboardButton("⭐ Watchlistga qo‘shish", callback_data=f"w:add:{movie_id}"),
+            InlineKeyboardButton("🗑 O‘chirish", callback_data=f"w:del:{movie_id}"),
         ]
     )
+
+    # 3-qator: menyu
+    rows.append([InlineKeyboardButton("⬅️ Menyu", callback_data="menu")])
+
+    return InlineKeyboardMarkup(rows)
 
 
 # ------------------ TMDB (HTTP) ------------------
@@ -199,6 +219,15 @@ def format_providers(providers_json: dict, region: str) -> str:
     return "\n".join(lines)
 
 
+def get_provider_link(providers_json: dict, region: str) -> str | None:
+    """TMDB watch/providers ichidan JustWatch linkni oladi (region -> US fallback)."""
+    results = (providers_json or {}).get("results", {}) or {}
+    info = results.get(region) or results.get("US")
+    if not info:
+        return None
+    return info.get("link")
+
+
 # ------------------ BOT HANDLERS ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -215,7 +244,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ℹ️ Yordam:\n"
         "1) Kino nomini yozing (masalan: Interstellar)\n"
         "2) Bot top 5 variant beradi — birini tanlaysiz\n"
-        "3) 'Qayerda ko‘rish mumkin' bo‘limida rasmiy platformalar chiqadi\n\n"
+        "3) 'Qayerda ko‘rish mumkin' bo‘limida rasmiy platformalar chiqadi\n"
+        "4) '🎬 Ko‘rish (JustWatch)' tugmasi orqali aynan qaysi platformada borligi ochiladi\n\n"
         "🔥 Trending — mashhur kinolar\n"
         "⭐ Watchlist — saqlagan kinolaringiz",
         reply_markup=main_menu_kb(),
@@ -285,7 +315,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not TMDB_API_KEY:
-        await update.message.reply_text("TMDB_API_KEY sozlanmagan. Render -> Environment ga TMDB_API_KEY qo‘ying.", reply_markup=main_menu_kb())
+        await update.message.reply_text(
+            "TMDB_API_KEY sozlanmagan. Render -> Environment ga TMDB_API_KEY qo‘ying.",
+            reply_markup=main_menu_kb(),
+        )
         return
 
     await update.message.reply_text("🔎 Qidiryapman...")
@@ -351,8 +384,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         genres = ", ".join([g.get("name") for g in (details.get("genres") or []) if g.get("name")]) or "—"
 
         providers_text = format_providers(providers, DEFAULT_REGION)
+        watch_url = get_provider_link(providers, DEFAULT_REGION)  # ✅ mana ssilka
+        yt_url = youtube_search_url(title, year)
 
-        text = (
+        text_out = (
             f"🎬 *{title}*"
             + (f" ({year})" if year else "")
             + "\n\n"
@@ -367,12 +402,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo_url = f"{TMDB_IMG}{poster_path}"
             await q.message.reply_photo(
                 photo=photo_url,
-                caption=text[:1020],
+                caption=text_out[:1020],
                 parse_mode="Markdown",
-                reply_markup=movie_actions_kb(movie_id),
+                reply_markup=movie_actions_kb(movie_id, watch_url, yt_url),
             )
         else:
-            await q.message.reply_text(text, parse_mode="Markdown", reply_markup=movie_actions_kb(movie_id))
+            await q.message.reply_text(
+                text_out,
+                parse_mode="Markdown",
+                reply_markup=movie_actions_kb(movie_id, watch_url, yt_url),
+            )
 
 
 # ------------------ AIOHTTP WEB SERVER (WEBHOOK) ------------------
